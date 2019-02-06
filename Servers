@@ -1,0 +1,156 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:tracking="http://www.mulesoft.org/schema/mule/ee/tracking" xmlns:db="http://www.mulesoft.org/schema/mule/db"
+	xmlns:netsuite="http://www.mulesoft.org/schema/mule/netsuite"
+	xmlns:secure-property-placeholder="http://www.mulesoft.org/schema/mule/secure-property-placeholder" xmlns:dynamicscrm="http://www.mulesoft.org/schema/mule/dynamicscrm"
+	xmlns:sftp="http://www.mulesoft.org/schema/mule/sftp"
+	xmlns:http="http://www.mulesoft.org/schema/mule/http"
+	xmlns:dw="http://www.mulesoft.org/schema/mule/ee/dw"
+	xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:spring="http://www.springframework.org/schema/beans" 
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd
+http://www.mulesoft.org/schema/mule/netsuite http://www.mulesoft.org/schema/mule/netsuite/current/mule-netsuite.xsd
+http://www.mulesoft.org/schema/mule/dynamicscrm http://www.mulesoft.org/schema/mule/dynamicscrm/current/mule-dynamicscrm.xsd
+http://www.mulesoft.org/schema/mule/sftp http://www.mulesoft.org/schema/mule/sftp/current/mule-sftp.xsd
+http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+http://www.mulesoft.org/schema/mule/ee/dw http://www.mulesoft.org/schema/mule/ee/dw/current/dw.xsd
+http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans-current.xsd
+http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/secure-property-placeholder http://www.mulesoft.org/schema/mule/secure-property-placeholder/current/mule-secure-property-placeholder.xsd
+http://www.mulesoft.org/schema/mule/ee/tracking http://www.mulesoft.org/schema/mule/ee/tracking/current/mule-tracking-ee.xsd">
+    <http:listener-config name="HTTP_Listener_Configuration" host="0.0.0.0" port="8081" doc:name="HTTP Listener Configuration"/>
+    <sftp:connector name="SFTP" validateConnections="true" doc:name="SFTP"/>
+    <dynamicscrm:online-connection-config name="Microsoft_Dynamics_CRM__Online_Connection" username="#[flowVars['crmproperties']['user']]" password="#[flowVars['crmproperties']['password']]" organizationServiceUrl="#[flowVars['crmproperties']['url']]" connectionTimeout="600000" doc:name="Microsoft Dynamics CRM: Online Connection" disableCnCheck="true">
+        <reconnect frequency="2000000"/>
+    </dynamicscrm:online-connection-config>
+    <secure-property-placeholder:config name="Secure_Property_Placeholder" encryptionAlgorithm="Blowfish" key="${local.key}" location="classpath:${env}.properties" doc:name="Secure Property Placeholder"/>
+    <netsuite:config-login-authentication name="NetSuite__Login_Authentication" email="${netsuite.username}" password="${netsuite.password}" account="${netsuite.account}" roleId="${netsuite.roleId}" applicationId="${netsuite.applicationId}" doc:name="NetSuite: Login Authentication"/>
+    <flow name="serversFlow">
+        <http:listener config-ref="HTTP_Listener_Configuration" path="/test" allowedMethods="GET" doc:name="HTTP"/>
+        <choice doc:name="Choice">
+            <when expression="#[message.inboundProperties.'http.query.params'.sftp == 'true']">
+                <flow-ref name="sftpFlow" doc:name="sftpFlow"/>
+            </when>
+            <otherwise>
+                <logger message="SFTP not selected" level="INFO" doc:name="Logger"/>
+            </otherwise>
+        </choice>
+        <choice doc:name="Choice">
+            <when expression="#[message.inboundProperties.'http.query.params'.crm == 'true']">
+                <flow-ref name="crmFlow" doc:name="crmFlow"/>
+            </when>
+            <otherwise>
+                <logger message="crm not selected" level="INFO" doc:name="Logger"/>
+            </otherwise>
+        </choice>
+        <choice doc:name="Choice">
+            <when expression="#[message.inboundProperties.'http.query.params'.ns == 'true']">
+                <flow-ref name="NetsuiteFlow" doc:name="NetsuiteFlow"/>
+            </when>
+            <otherwise>
+                <logger message="NS connector not selected" level="INFO" doc:name="Logger"/>
+            </otherwise>
+        </choice>
+    </flow>
+    <flow name="sftpFlow">
+        <set-variable variableName="config" value="${sftp}" doc:name="Variable"/>
+        <set-payload value="#[flowVars.config.split(',')]" doc:name="payload"/>
+        <expression-component doc:name="Expression"><![CDATA[flowVars.sftpresult = new java.util.ArrayList();]]></expression-component>
+        <foreach collection="#[payload]" doc:name="For Each">
+            <flow-ref name="sftpserverstausFlow" doc:name="sftpserverstausFlow"/>
+        </foreach>
+        <set-payload value="#[flowVars['sftpresult']]" doc:name="Set Payload"/>
+        <dw:transform-message doc:name="Transform Message">
+            <dw:set-payload><![CDATA[%dw 1.0
+%output application/json
+---
+payload]]></dw:set-payload>
+        </dw:transform-message>
+        <logger message="#[payload]" level="INFO" doc:name="Logger"/>
+    </flow>
+    <flow name="sftpserverstausFlow" processingStrategy="synchronous">
+        <dw:transform-message doc:name="properties">
+            <dw:set-variable variableName="sftphosts"><![CDATA[%dw 1.0
+%output application/java
+---
+
+{
+  host:	p(payload ++ '.host'),
+  port: p(payload ++ '.port'),
+  path: p(payload ++ '.fileLocation'),
+  user: p(payload ++ '.usernames'),
+  password: p(payload ++ '.password')
+}]]></dw:set-variable>
+        </dw:transform-message>
+        <sftp:outbound-endpoint exchange-pattern="one-way" connector-ref="SFTP" host="#[flowVars['sftphosts']['host']]" port="#[flowVars['sftphosts']['port']]" path="#[flowVars['sftphosts']['path']]" user="#[flowVars['sftphosts']['user']]" password="#[flowVars['sftphosts']['password']]" responseTimeout="10000" doc:name="SFTP" outputPattern="#[payload].txt"/>
+        <set-variable variableName="sftpstatus" value="&quot;success&quot;" doc:name="sftpstatus"/>
+        <set-payload value="{ Host:#[payload] User:#[flowVars.sftphosts.user] : status:#[flowVars.sftpstatus]  }" doc:name="Set Payload"/>
+        <expression-transformer expression="#[flowVars['sftpresult'].add(payload)]" doc:name="Expression"/>
+        <logger message="#[message.payload] is up: success" level="INFO" doc:name="Logger"/>
+        <catch-exception-strategy doc:name="Catch Exception Strategy">
+            <set-variable variableName="sftpstatus" value="&quot;failure&quot;" doc:name="sftpstatus"/>
+           <set-payload value="{ Host:#[payload] User:#[flowVars.sftphosts.user] : status:#[flowVars.sftpstatus]     errorMessage: #[exception.getCause()]  }" doc:name="Set Exception Payload"/>
+            <expression-transformer expression="#[flowVars['sftpresult'].add(payload)]" doc:name="Expression"/>
+            <logger message="#[message.payload]" level="INFO" doc:name="Logger"/>
+        </catch-exception-strategy>
+    </flow>
+    
+    <flow name="crmFlow">
+        <set-variable variableName="properties" value="${crm}" doc:name="Variable"/>
+        <set-payload value="#[flowVars.properties.split(',')]" doc:name="Set Payload"/>
+        <expression-component doc:name="Expression"><![CDATA[flowVars.crmresult = new java.util.ArrayList();]]></expression-component>
+        <foreach collection="#[payload]" doc:name="For Each">
+            <flow-ref name="crmserverstatusFlow" doc:name="crmserverstatusFlow"/>
+        </foreach>
+        <set-payload value="#[flowVars['crmresult']]" doc:name="Set Payload"/>
+        <dw:transform-message doc:name="Transform Message">
+            <dw:set-payload><![CDATA[%dw 1.0
+%output application/json
+---
+payload]]></dw:set-payload>
+        </dw:transform-message>
+        <logger message="#[payload]" level="INFO" doc:name="Logger"/>
+    </flow>
+    <flow name="crmserverstatusFlow">
+        <dw:transform-message doc:name="Transform Message">
+            <dw:set-variable variableName="crmproperties"><![CDATA[%dw 1.0
+%output application/java
+---
+{
+	url:p('crm.' ++ payload ++ '.organization' ++ '.url'),
+	user:p('crm.' ++ payload ++ '.username'),
+	password:p('crm.' ++ payload ++ '.password')
+}]]></dw:set-variable>
+        </dw:transform-message>
+        <dynamicscrm:retrieve-multiple-by-query config-ref="Microsoft_Dynamics_CRM__Online_Connection"  doc:name="Microsoft Dynamics CRM" query="dsql:SELECT fullname FROM contact where contactid='52a8a5fe-3651-e711-810b-c4346bac3fa4'" singlePageNumber="1"/>
+        <set-variable variableName="crmstatus" value="#['Success']" doc:name="crmstatus"/>
+        <set-payload value="{ Host:#[payload] User:#[flowVars.crmproperties.user] : status:#[flowVars.crmstatus]  }" doc:name="Set Payload"/>
+        <expression-transformer expression="#[flowVars['crmresult'].add(payload)]" doc:name="Expression"/>
+        <logger message="#[message]" level="INFO" doc:name="Logger"/>
+        
+        <catch-exception-strategy doc:name="Catch Exception Strategy">
+            <set-variable variableName="crmstatus" value="#['Failure']" doc:name="crmstatus"/>
+            <set-payload value="{ Host:#[payload] User:#[flowVars.crmproperties.user] : status:#[flowVars.crmstatus]     errorMessage: #[exception.getCause()]  }" doc:name="Set Payload"/>
+            <expression-transformer mimeType="application/pdf" expression="#[flowVars['crmresult'].add(payload)]" doc:name="Expression"/>
+            <logger message="#[flowVars.crmstatus]" level="INFO" doc:name="Logger"/>
+        </catch-exception-strategy>
+    </flow>
+     
+   
+    <flow name="NetsuiteFlow">
+        <netsuite:get-records config-ref="NetSuite__Login_Authentication"  doc:name="NetSuite" type="CURRENCY"/>
+        <set-variable variableName="NSstatus" value="#['Success']" doc:name="Variable"/>
+        <set-payload value="{  User:${netsuite.username} : status:#[flowVars.NSstatus]  }" doc:name="Set Payload"/>
+        <logger message="#[payload]" level="INFO" doc:name="Logger"/>
+        <catch-exception-strategy doc:name="Catch Exception Strategy">
+            <set-variable variableName="NSstatus" value="#['Failure']" doc:name="Variable"/>
+            <set-payload value="{ User:${netsuite.username} : status:#[flowVars.NSstatus]     errorMessage: #[exception.getCause()]  }" doc:name="Set Payload"/>
+            <logger message="#[message.payload]" level="INFO" doc:name="Logger"/>
+        </catch-exception-strategy>
+    </flow>
+
+
+
+
+</mule>
